@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+events.jsonl
+request_manager.lock
+request_manager.log
+request_state.json

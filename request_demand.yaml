@@ -1,0 +1,70 @@
+# Central TPU request-manager demand file.
+#
+# The long-running manager reloads this file every loop. Changing target_idle,
+# max_inflight, regions, or dry_run does not require restarting the process.
+
+enabled: true
+dry_run: false
+owner: sqa
+base_prefix: sqa
+
+# Default scope. v5p requests use the *-a zones; v6e requests use the *-b zones.
+regions:
+  - us-central1
+  - us-east5
+  - asia-northeast1-b
+
+demands:
+  # Shorthand is accepted too: v6-32 normalizes to v6e-32.
+  v6e-32:
+    target_idle: 5
+    max_inflight: 6
+  v6e-64:
+    target_idle: 2
+    max_inflight: 6
+  v5p-64:
+    target_idle: 5
+    max_inflight: 6
+  v5p-128:
+    target_idle: 2
+    max_inflight: 6
+
+create:
+  max_create_per_loop: 20
+  workers: 50
+  create_timeout_seconds: 300
+  min_attempt_interval_seconds: 5
+  new_vm_grace_seconds: 300
+  append_vm_txt: true
+  labels:
+    env: prod
+  cooldown_seconds:
+    success: 5
+    failure: 5
+    capacity: 5
+    quota: 60
+    rate_limit: 60
+    timeout: 5
+  max_cooldown_seconds: 600
+
+reclaim:
+  # The user explicitly allows deleting other people's long-idle cards. The
+  # manager still requires a continuous IDLE history from tou plus a final remote
+  # idle check before real deletion.
+  allow_delete_others: true
+  require_preemptible_or_spot: true
+  lifecycle_cache_ttl_seconds: 3600
+  delete_non_demand: true
+  delete_surplus_demand: false
+  keep_surplus: 0
+  idle_ttl_minutes: 40
+  max_delete_per_loop: 5
+  delete_workers: 50
+  delete_timeout_seconds: 300
+  confirm_idle_before_delete: true
+
+audit:
+  max_cache_age_seconds: 300
+
+loop:
+  interval_seconds: 600
