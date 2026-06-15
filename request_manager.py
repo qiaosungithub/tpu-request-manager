@@ -48,6 +48,13 @@ DEFAULT_LOCK = os.path.join(BASE_DIR, "request_manager.lock")
 VM_TXT = os.path.join(WORK_ROOT, "vm.txt")
 TPU_LOCK_DIR = "/kmh-nfs-ssd-us-mount/code/qiao/tpu_lock"
 
+# unified_infra integration: each freshly created TPU wakes the infra daemon to
+# find a job for it. INFRA_SIGNAL=0 disables; INFRA_BIN overrides the launcher.
+INFRA_BIN = os.environ.get(
+    "INFRA_BIN", os.path.join(WORK_ROOT, "unified_infra", "bin", "infra")
+)
+INFRA_SIGNAL_ENABLED = os.environ.get("INFRA_SIGNAL", "1") != "0"
+
 PROJECT = "he-vision-group"
 DEFAULT_REGIONS = ["us-central1", "us-east5", "asia-northeast1-b"]
 KNOWN_REGION_ZONES = {
@@ -174,6 +181,37 @@ def atomic_write_json(path: str, payload: Any, indent: int = 2) -> None:
                 os.remove(tmp_path)
             except OSError:
                 pass
+
+
+def notify_infra_signal(name: Optional[str], zone: Optional[str],
+                        tpu_type: Optional[str]) -> None:
+    """Wake the unified_infra daemon to schedule a job onto a freshly created TPU.
+
+    Best-effort and concurrency-safe: shells out to the infra `signal` command,
+    which appends to the daemon's inbox under an exclusive lock, so multiple
+    request-manager instances signaling at once cannot corrupt it. Never raises —
+    a signaling failure must not fail or block VM creation (signals also queue
+    until the daemon drains them, and the daemon's 5-min idle sweep is a backstop
+    for any signal that is lost).
+    """
+    if not INFRA_SIGNAL_ENABLED or not name or not zone:
+        return
+    cmd = [INFRA_BIN, "signal", name, "--zone", zone]
+    if tpu_type:
+        cmd += ["--type", tpu_type]
+    try:
+        proc = subprocess.run(
+            cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30
+        )
+        if proc.returncode == 0:
+            logging.info("infra signal sent name=%s zone=%s type=%s", name, zone, tpu_type)
+        else:
+            logging.warning(
+                "infra signal failed rc=%s name=%s out=%s",
+                proc.returncode, name, (proc.stdout or "").strip(),
+            )
+    except Exception as exc:  # never let signaling break creation
+        logging.warning("infra signal error name=%s: %s", name, exc)
 
 
 def append_jsonl(path: str, payload: Dict[str, Any]) -> None:
@@ -1352,6 +1390,10 @@ def run_creates(
             )
             if config.append_vm_txt and not result.get("dry_run_only"):
                 append_vm_record(result)
+            if not result.get("dry_run_only"):
+                # got a card -> wake the infra daemon to find it a job
+                notify_infra_signal(result.get("name"), result.get("zone"),
+                                    result.get("tpu_type"))
         else:
             logging.warning(
                 "create failed type=%s zone=%s class=%s output=%s",

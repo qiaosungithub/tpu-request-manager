@@ -31,6 +31,25 @@ The manager reads inventory from:
 That cache is produced by `wrap_master.py` / `yizhitou`. If it is stale, the
 manager skips create/delete unless started with `--refresh-if-stale`.
 
+## unified_infra integration
+
+Every time the manager **successfully creates a TPU VM**, it wakes the
+`unified_infra` daemon to schedule a job onto that card:
+
+```text
+infra signal <vm_name> --zone <zone> --type <tpu_type>
+```
+
+- Best-effort: a signaling failure is logged but never fails/blocks creation
+  (signals also queue until the daemon runs, and the daemon's 5-min idle sweep
+  is a backstop for any lost signal).
+- Concurrency-safe: multiple request-manager instances may run at once; the
+  `infra signal` command appends to the daemon inbox under an exclusive lock, and
+  the daemon ignores a signal for a card that already has an active job, so two
+  jobs never land on one card.
+- Controls: `INFRA_SIGNAL=0` disables signaling; `INFRA_BIN=<path>` overrides the
+  infra launcher (default `…/work/unified_infra/bin/infra`).
+
 Reclaim protection:
 
 - A TPU is eligible for deletion only after continuous IDLE observations meet
