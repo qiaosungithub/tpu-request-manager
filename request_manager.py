@@ -369,21 +369,35 @@ def load_config(path: str, dry_run_override: Optional[bool] = None) -> ManagerCo
     if not isinstance(demand_map, dict):
         raise ConfigError("demands must be a mapping from TPU type to settings")
     demands: Dict[str, Demand] = {}
-    for raw_type, spec in demand_map.items():
-        tpu_type = normalize_tpu_type(raw_type)
+    for raw_label, spec in demand_map.items():
+        # A demand key may be a bare type (`v6e-32`) or a type pinned to a region
+        # scope (`v6e-32@asia-northeast1-b`), so the same TPU type can carry several
+        # independent per-region floors (e.g. a us-only pool plus an asia-only pool
+        # for region-locked data). The label stays the (unique) map key; the real
+        # gcloud type used for counting/creates is Demand.tpu_type.
+        raw_label = str(raw_label)
+        type_part, _, region_suffix = raw_label.partition("@")
+        tpu_type = normalize_tpu_type(type_part)
         if spec is None:
             spec = {}
         if isinstance(spec, int):
             spec = {"target_idle": spec}
         if not isinstance(spec, dict):
-            raise ConfigError(f"demand for {raw_type!r} must be a mapping or integer target")
+            raise ConfigError(f"demand for {raw_label!r} must be a mapping or integer target")
         target_idle = int_value(spec.get("target_idle"), 0, minimum=0)
         max_inflight = int_value(spec.get("max_inflight"), 1, minimum=0)
-        demand_regions = tuple(spec.get("regions") or regions)
+        # Region-scope precedence: explicit spec `regions:` > `@suffix` in the key >
+        # the file-level default regions.
+        if spec.get("regions"):
+            demand_regions = tuple(spec["regions"])
+        elif region_suffix:
+            demand_regions = (region_suffix,)
+        else:
+            demand_regions = regions
         zones = allowed_zones_for_type(tpu_type, demand_regions)
         if target_idle > 0 and not zones:
-            raise ConfigError(f"demand {raw_type!r} has no compatible zones in regions={list(demand_regions)}")
-        demands[tpu_type] = Demand(
+            raise ConfigError(f"demand {raw_label!r} has no compatible zones in regions={list(demand_regions)}")
+        demands[raw_label] = Demand(
             tpu_type=tpu_type,
             target_idle=target_idle,
             max_inflight=max_inflight,
@@ -760,6 +774,13 @@ def get_tpu_lifecycle(
     return info
 
 
+def target_idle_for_type(config: ManagerConfig, tpu_type: str) -> int:
+    """Total target_idle across every demand for this real TPU type. A type may now
+    span several demands (e.g. a us-only pool plus an asia-only floor), so surplus
+    decisions must sum their targets rather than look up a single keyed entry."""
+    return sum(d.target_idle for d in config.demands.values() if d.tpu_type == tpu_type)
+
+
 def plan_actions(
     config: ManagerConfig,
     state: Dict[str, Any],
@@ -768,19 +789,19 @@ def plan_actions(
     now: float,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
     counts = inventory_counts(records, state, config, now)
-    demanded_types = set(config.demands.keys())
+    demanded_types = {d.tpu_type for d in config.demands.values()}
 
     create_actions: List[Dict[str, Any]] = []
     planned_by_zone: Dict[str, int] = {}
     create_budget = config.max_create_per_loop
     demand_status: Dict[str, Dict[str, Any]] = {}
 
-    for tpu_type, demand in sorted(config.demands.items()):
-        current_idle = sum_type_zone(counts["idle_by_type_zone"], tpu_type, demand.zones)
-        pending_new = sum_type_zone(counts["pending_by_type_zone"], tpu_type, demand.zones)
+    for label, demand in sorted(config.demands.items()):
+        current_idle = sum_type_zone(counts["idle_by_type_zone"], demand.tpu_type, demand.zones)
+        pending_new = sum_type_zone(counts["pending_by_type_zone"], demand.tpu_type, demand.zones)
         effective_idle = current_idle + pending_new
         deficit = max(0, demand.target_idle - effective_idle)
-        demand_status[tpu_type] = {
+        demand_status[label] = {
             "target_idle": demand.target_idle,
             "idle": current_idle,
             "pending_new": pending_new,
@@ -797,7 +818,7 @@ def plan_actions(
                 break
             planned_by_zone[zone] = planned_by_zone.get(zone, 0) + 1
             create_budget -= 1
-            create_actions.append({"kind": "create", "tpu_type": tpu_type, "zone": zone})
+            create_actions.append({"kind": "create", "tpu_type": demand.tpu_type, "zone": zone})
             if create_budget <= 0:
                 break
 
@@ -846,8 +867,7 @@ def plan_actions(
                     reason = "non_demand_long_idle"
                     priority = 0
             elif reclaim["delete_surplus_demand"]:
-                demand = config.demands[tpu_type]
-                surplus_limit = demand.target_idle + reclaim["keep_surplus"]
+                surplus_limit = target_idle_for_type(config, tpu_type) + reclaim["keep_surplus"]
                 current_idle = idle_counts_for_delete.get(tpu_type, 0)
                 if current_idle > surplus_limit:
                     reason = "surplus_demand_long_idle"
@@ -860,8 +880,7 @@ def plan_actions(
         for _priority, _neg_idle, _name, record, idle_seconds, reason, managed in candidates:
             tpu_type = record["tpu_type"]
             if reason == "surplus_demand_long_idle":
-                demand = config.demands[tpu_type]
-                surplus_limit = demand.target_idle + reclaim["keep_surplus"]
+                surplus_limit = target_idle_for_type(config, tpu_type) + reclaim["keep_surplus"]
                 current_idle = idle_counts_for_delete.get(tpu_type, 0)
                 if current_idle <= surplus_limit:
                     continue

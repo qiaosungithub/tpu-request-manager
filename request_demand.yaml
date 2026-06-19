@@ -12,11 +12,21 @@ base_prefix: sqa
 regions:
   - us-central1
   - us-east5
-  - asia-northeast1-b
 
 demands:
   # Shorthand is accepted too: v6-32 normalizes to v6e-32.
+  #
+  # A demand key may be a bare type (uses the default `regions` above) OR a type
+  # pinned to a region/zone scope with `type@scope`, so the same TPU type can keep
+  # several independent per-region floors. Scopes must be DISJOINT across demands
+  # of the same type, or their idle counts overlap and double-count.
   v6e-32:
+    target_idle: 5
+    max_inflight: 6
+  # laion-400m only has a single data copy in asia, so those jobs must run in
+  # asia-northeast1-b. Keep a dedicated idle floor of 5 v6e-32 there, separate from
+  # the us pool above.
+  v6e-32@asia-northeast1-b:
     target_idle: 5
     max_inflight: 6
   v6e-64:
