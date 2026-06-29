@@ -34,6 +34,14 @@ demands:
   v5p-32:            # maintain 10 idle v5p-32 (added per user request 2026-06-29)
     target_idle: 10
     max_inflight: 6
+  # v6e re-enabled 2026-06-29 per user request (overrides the summer Kaiming
+  # "v6e off" policy: v6e was reserved for other projects). Maintain 10 idle each.
+  v6e-16:
+    target_idle: 10
+    max_inflight: 6
+  v6e-32:
+    target_idle: 10
+    max_inflight: 6
 
 create:
   max_create_per_loop: 20
