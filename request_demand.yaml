@@ -31,6 +31,9 @@ demands:
   v5p-128:
     target_idle: 2
     max_inflight: 6
+  v5p-32:            # maintain 10 idle v5p-32 (added per user request 2026-06-29)
+    target_idle: 10
+    max_inflight: 6
 
 create:
   max_create_per_loop: 20
