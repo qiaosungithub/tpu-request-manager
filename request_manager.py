@@ -1450,6 +1450,29 @@ def prune_deleted_managed_vms(state: Dict[str, Any], records: Sequence[Dict[str,
             managed[name]["stale_missing_since"] = managed[name].get("stale_missing_since") or now
 
 
+def prune_stale_state(state: Dict[str, Any], records: Sequence[Dict[str, Any]], now: float) -> None:
+    """Drop idle_observations / lifecycle_cache entries for cards long gone from the
+    audit cache. Like managed_vms, these are keyed by VM name and were never pruned,
+    so spot-preemption churn grew them (and request_state.json) without bound."""
+    seen = {record["name"] for record in records}
+    ttl = 48 * 3600
+    for key, ts_field in (("idle_observations", "last_status_seen"),
+                          ("lifecycle_cache", "checked_at")):
+        bucket = state.get(key)
+        if not isinstance(bucket, dict):
+            continue
+        for name in list(bucket.keys()):
+            if name in seen:
+                continue
+            entry = bucket.get(name) or {}
+            try:
+                last_seen = float(entry.get(ts_field) or 0)
+            except (TypeError, ValueError):
+                last_seen = 0.0
+            if now - last_seen > ttl:
+                del bucket[name]
+
+
 def apply_delete_results_to_state(state: Dict[str, Any], results: Sequence[Dict[str, Any]], now: float) -> None:
     managed = state.setdefault("managed_vms", {})
     observations = state.setdefault("idle_observations", {})
@@ -1529,6 +1552,7 @@ def manager_once(
     records = filtered_records(raw_records, scope_zones)
     update_idle_observations(state, records, cache_ts)
     prune_deleted_managed_vms(state, records, now)
+    prune_stale_state(state, records, now)
     reconcile_manager_named_vms(state, records, config, now)
 
     if not config.enabled:
