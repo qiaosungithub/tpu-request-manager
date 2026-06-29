@@ -1429,12 +1429,20 @@ def prune_deleted_managed_vms(state: Dict[str, Any], records: Sequence[Dict[str,
     # audit cache is authoritative enough for planning.
     seen = {record["name"] for record in records}
     managed = state.setdefault("managed_vms", {})
+    # A VM gone from the audit cache for this long (preempted, or deleted by someone
+    # else, so it never got a manager deleted_at) is gone for good — drop the record
+    # instead of leaking a 'stale_missing_since' ghost forever. Spot preemption churn
+    # otherwise grows managed_vms (and request_state.json) without bound.
+    stale_prune_seconds = 48 * 3600
     for name in list(managed.keys()):
         if name in seen:
             continue
         created_at = float(managed[name].get("created_at") or 0)
         deleted_at = managed[name].get("deleted_at")
+        stale_since = managed[name].get("stale_missing_since")
         if deleted_at and now - float(deleted_at) > 24 * 3600:
+            del managed[name]
+        elif stale_since and now - float(stale_since) > stale_prune_seconds:
             del managed[name]
         elif created_at and now - created_at > 24 * 3600:
             # It either disappeared or never made it into cache; stop counting it
