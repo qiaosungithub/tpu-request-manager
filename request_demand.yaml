@@ -20,18 +20,11 @@ demands:
   # pinned to a region/zone scope with `type@scope`, so the same TPU type can keep
   # several independent per-region floors. Scopes must be DISJOINT across demands
   # of the same type, or their idle counts overlap and double-count.
-  v6e-32:
-    target_idle: 5
-    max_inflight: 6
-  # laion-400m only has a single data copy in asia, so those jobs must run in
-  # asia-northeast1-b. Keep a dedicated idle floor of 5 v6e-32 there, separate from
-  # the us pool above.
-  v6e-32@asia-northeast1-b:
-    target_idle: 5
-    max_inflight: 6
-  v6e-64:
-    target_idle: 2
-    max_inflight: 6
+  #
+  # v6e DISABLED for summer 2026 (Kaiming policy): v6e is reserved for other
+  # projects, so this allocator no longer requests any v6e cards. Existing v6e
+  # cards are protected from deletion via reclaim.protected_types below. To
+  # re-enable, restore the v6e-32, v6e-32@asia-northeast1-b and v6e-64 demands.
   v5p-64:
     target_idle: 5
     max_inflight: 6
@@ -67,8 +60,13 @@ reclaim:
   delete_non_demand: true
   delete_surplus_demand: false
   keep_surplus: 0
+  # protected_types removed 2026-06-24 (user request): v6e reclaim re-enabled, so the
+  # sweep now deletes long-idle non-demand v6e cards like any other type. (The earlier
+  # Kaiming-policy v6e-delete protection is lifted; v6e is still not REQUESTED unless a
+  # v6e demand is present.)
+  protected_types: []
   idle_ttl_minutes: 40
-  max_delete_per_loop: 5
+  max_delete_per_loop: 0  # reaper DISABLED 2026-06-29 per user (was 15): no idle-card reaping
   delete_workers: 50
   delete_timeout_seconds: 300
   confirm_idle_before_delete: true

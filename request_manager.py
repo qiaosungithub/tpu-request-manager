@@ -444,6 +444,11 @@ def load_config(path: str, dry_run_override: Optional[bool] = None) -> ManagerCo
         "delete_timeout_seconds": int_value(reclaim_raw.get("delete_timeout_seconds"), 300, minimum=1),
         "confirm_idle_before_delete": bool_value(reclaim_raw.get("confirm_idle_before_delete"), True),
         "protected_name_substrings": list(reclaim_raw.get("protected_name_substrings") or []),
+        # Never-delete list keyed by TPU type or family (e.g. "v6e" guards every
+        # v6e-* size). Kaiming policy: v6e is reserved for other projects, so even
+        # once v6e drops out of the demand set we must not reap those cards.
+        "protected_types": [str(x).strip().lower()
+                            for x in (reclaim_raw.get("protected_types") or [])],
     }
 
     dry_run = bool_value(raw.get("dry_run"), False)
@@ -685,6 +690,22 @@ def protected_name(name: str, protected_substrings: Sequence[str]) -> bool:
     return any(str(item).lower() in lowered for item in protected_substrings)
 
 
+def type_protected(tpu_type: Optional[str], protected: Sequence[str]) -> bool:
+    """True if a card's type is on the never-delete list.
+
+    Matches either an exact type ("v6e-32") or a whole family ("v6e" guards every
+    v6e-16/32/64). Used to keep the reclaim sweep from reaping cards reserved for
+    other projects even after they drop out of the demand set.
+    """
+    if not protected or not tpu_type:
+        return False
+    t = str(tpu_type).strip().lower()
+    if t in protected:
+        return True
+    family = t.rsplit("-", 1)[0] if "-" in t else t
+    return family in protected
+
+
 def describe_tpu_lifecycle(name: str, zone: str, timeout_seconds: int = 60) -> Dict[str, Any]:
     cmd = [
         "gcloud",
@@ -837,6 +858,9 @@ def plan_actions(
             name = record["name"]
             tpu_type = record["tpu_type"]
             if protected_name(name, reclaim["protected_name_substrings"]):
+                continue
+            if type_protected(tpu_type, reclaim["protected_types"]):
+                # Kaiming policy: never reap v6e (reserved for other projects).
                 continue
             if reclaim["require_preemptible_or_spot"]:
                 lifecycle = get_tpu_lifecycle(record, state, config, now)
